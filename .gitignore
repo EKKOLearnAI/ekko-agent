@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.ekko-agent/
+.env
+.env.local
+package-lock.json
