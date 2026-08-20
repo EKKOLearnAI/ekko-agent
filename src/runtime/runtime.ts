@@ -108,6 +108,8 @@ export class AgentRuntime {
   private readonly modelDefaults?: AgentRuntimeOptions['modelDefaults']
   private readonly maxModelRetries: number
   private readonly maxConsecutiveToolFailures: number
+  private readonly backgroundDelegationEnabled: boolean
+  private readonly subtaskMaxSteps: number
   private readonly defaultContextKey?: string
   private readonly memory?: AgentRuntimeOptions['memory']
   private readonly skillReview?: SkillReviewService
@@ -139,6 +141,11 @@ export class AgentRuntime {
     this.modelDefaults = options.modelDefaults
     this.maxModelRetries = options.maxModelRetries ?? DEFAULT_AGENT_MODEL_MAX_RETRIES
     this.maxConsecutiveToolFailures = options.maxConsecutiveToolFailures ?? DEFAULT_AGENT_MAX_CONSECUTIVE_TOOL_FAILURES
+    this.backgroundDelegationEnabled = options.backgroundDelegationEnabled !== false
+    this.subtaskMaxSteps = Math.max(
+      1,
+      Math.floor(options.subtaskMaxSteps ?? DEFAULT_AGENT_SUBTASK_MAX_STEPS),
+    )
     this.defaultContextKey = options.contextKey
     this.memory = options.memory
     this.runtimeLogger = options.logWriter
@@ -281,7 +288,7 @@ export class AgentRuntime {
       skillMutationSource: 'foreground',
       delegationDepth: input.toolContext?.delegationDepth ?? this.toolContext?.delegationDepth ?? 0,
       delegateTask: request => {
-        if (request.mode === 'background' && input.backgroundDelegationEnabled === false) {
+        if (request.mode === 'background' && this.backgroundDelegationFor(input) === false) {
           return Promise.resolve({
             ok: false,
             content: 'Background subtask delegation is disabled for this run. Use foreground mode.',
@@ -736,7 +743,7 @@ export class AgentRuntime {
       ? this.tools.definitions().filter(definition => (
           (input.toolContext?.delegationDepth ?? this.toolContext?.delegationDepth ?? 0) === 0 ||
           definition.name !== 'delegate_task'
-        )).map(definition => input.backgroundDelegationEnabled === false
+        )).map(definition => this.backgroundDelegationFor(input) === false
           ? foregroundOnlyDelegateTaskDefinition(definition)
           : definition)
       : []
@@ -763,6 +770,10 @@ export class AgentRuntime {
       (typeof input.metadata?.session_id === 'string' ? input.metadata.session_id : undefined) ||
       input.toolContext?.sessionId ||
       this.defaultContextKey
+  }
+
+  private backgroundDelegationFor(input: AgentRuntimeRunInput): boolean {
+    return input.backgroundDelegationEnabled ?? this.backgroundDelegationEnabled
   }
 
   private registerBoundaryRun(sessionId: string, runId: string): ActiveBoundaryRun {
@@ -900,7 +911,7 @@ export class AgentRuntime {
           skills: parentInput.skills,
           maxSteps: Math.min(
             parentInput.maxSteps ?? this.maxSteps,
-            DEFAULT_AGENT_SUBTASK_MAX_STEPS,
+            this.subtaskMaxSteps,
           ),
           maxModelRetries: parentInput.maxModelRetries,
           maxConsecutiveToolFailures: parentInput.maxConsecutiveToolFailures,
@@ -926,7 +937,7 @@ export class AgentRuntime {
           modelDefaults: parentInput.modelDefaults,
           contextKey: childContextKey,
           memoryEnabled: false,
-          backgroundDelegationEnabled: parentInput.backgroundDelegationEnabled,
+          backgroundDelegationEnabled: this.backgroundDelegationFor(parentInput),
           logContext: parentInput.logContext,
           onEvent: (event) => {
             if ('runId' in event) childRunId = event.runId

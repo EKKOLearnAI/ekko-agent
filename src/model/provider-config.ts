@@ -1,6 +1,15 @@
-import type { ModelProviderConfig, ModelProviderType, ModelRequestStyle } from './types'
+import type { EkkoConfig } from '../config'
+import type {
+  ModelClient,
+  ModelClientOptions,
+  ModelProviderConfig,
+  ModelProviderType,
+  ModelRequest,
+  ModelRequestStyle,
+} from './types'
 import { authorizedModelProviderPreset } from './authorized-providers'
 import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '../config'
+import { createModelClient } from './registry'
 
 export interface ResolveModelProviderConfigInput {
   provider: string
@@ -16,6 +25,17 @@ export interface ResolvedModelProviderConfigs {
   fallbackProviderConfig?: ModelProviderConfig
   requestStyle: ModelRequestStyle
   inferredRequestStyle: ModelRequestStyle
+}
+
+export interface ResolveConfiguredModelProviderInput {
+  config: EkkoConfig
+  provider?: string
+  model?: string
+  apiKey?: string
+}
+
+export interface CreateConfiguredModelClientInput extends ResolveConfiguredModelProviderInput {
+  clientOptions?: ModelClientOptions
 }
 
 export function requestStyleFromApiMode(apiMode?: string): ModelRequestStyle | undefined {
@@ -100,5 +120,66 @@ export function resolveModelProviderConfigs(input: ResolveModelProviderConfigInp
     fallbackProviderConfig,
     requestStyle,
     inferredRequestStyle,
+  }
+}
+
+/** Resolve one persisted provider, with an optional per-call credential override. */
+export function resolveConfiguredModelProvider(
+  input: ResolveConfiguredModelProviderInput,
+): ModelProviderConfig {
+  const provider = String(input.provider || input.config.model.defaultProvider || '').trim()
+  if (!provider) {
+    throw new Error('No model provider was selected and model.defaultProvider is not configured.')
+  }
+  const settings = input.config.model.providers[provider]
+  if (!settings) throw new Error(`Configured model provider not found: ${provider}`)
+
+  const apiKey = input.apiKey ?? settings.apiKey
+  const preset = authorizedModelProviderPreset(provider, apiKey)
+  const defaultModel = String(
+    input.model ||
+    (provider === input.config.model.defaultProvider ? input.config.model.defaultModel : '') ||
+    settings.defaultModel,
+  ).trim()
+  if (!defaultModel) throw new Error(`Model provider ${provider} has no default model.`)
+
+  return {
+    id: preset?.id || provider,
+    type: settings.type,
+    requestStyle: settings.requestStyle || preset?.requestStyle || requestStyleForConfig(provider, settings.baseUrl),
+    openAIChatReasoningReplayFormat: settings.openAIChatReasoningReplayFormat,
+    apiKey,
+    baseUrl: settings.baseUrl || preset?.baseUrl,
+    endpointPath: settings.endpointPath,
+    defaultModel,
+    headers: {
+      ...(preset?.headers || {}),
+      ...(settings.headers || {}),
+    },
+    timeoutMs: settings.timeoutMs ?? input.config.model.requestTimeoutMs,
+    capabilities: settings.capabilities,
+  }
+}
+
+export function createConfiguredModelClient(
+  input: CreateConfiguredModelClientInput,
+): ModelClient {
+  return createModelClient(resolveConfiguredModelProvider(input), input.clientOptions)
+}
+
+export function modelRequestDefaultsFromConfig(
+  config: EkkoConfig,
+  provider?: string,
+): Omit<ModelRequest, 'messages' | 'tools' | 'stream'> {
+  const selectedProvider = String(provider || config.model.defaultProvider || '').trim()
+  const providerModel = selectedProvider
+    ? config.model.providers[selectedProvider]?.defaultModel
+    : undefined
+  return {
+    model: config.model.defaultModel || providerModel,
+    ...(config.model.temperature === undefined ? {} : { temperature: config.model.temperature }),
+    ...(config.model.maxTokens === undefined ? {} : { maxTokens: config.model.maxTokens }),
+    reasoningEffort: config.model.reasoningEffort,
+    reasoningSummary: config.model.reasoningSummary,
   }
 }

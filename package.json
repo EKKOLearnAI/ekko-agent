@@ -1,7 +1,6 @@
 {
   "name": "ekko-agent",
   "version": "0.1.0",
-  "private": true,
   "type": "commonjs",
   "description": "Standalone Ekko Agent runtime with model adapters, tools, memory, skills, and delegation.",
   "repository": {
@@ -11,14 +10,28 @@
   "engines": {
     "node": ">=23.0.0"
   },
-  "main": "src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run check && npm test"
   },
   "dependencies": {
     "agent-browser": "^0.26.0",

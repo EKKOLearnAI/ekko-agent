@@ -86,7 +86,7 @@ Use `workspaceRoot` to keep file and terminal working directories inside a
 specific workspace.
 
 ```ts
-import { createDefaultToolRegistry } from './src/index'
+import { createDefaultToolRegistry } from 'ekko-agent'
 
 const tools = createDefaultToolRegistry()
 
@@ -155,11 +155,13 @@ The setup entry owns `EkkoDirectoryManager`, creates
 `<base>/.ekko/config/config.json`, the skills, logs, and workspace directories,
 and opens and migrates the SQLite database. Development uses the package-local
 `sql-data/ekko-agent.db`; production uses `<base>/.ekko/ekko.db`. It returns
-the shared database-backed memory service and closes that process-level resource
-through `setup.close()`. The global JSON file is initialized from Ekko's current
-runtime defaults. General runtime settings are not yet loaded as user- or
-profile-configurable input; the permanent tool-approval allowlist is the current
-exception. A configured profile uses
+the shared database-backed memory and conversation stores and closes that
+process-level resource through `setup.close()`. The global JSON file drives
+runtime limits, model defaults and providers, tools, approvals, delegation,
+memory, skills, logging, and prompt instructions. Configuration upgrades merge
+new defaults one field at a time: existing user values, arrays, and unknown
+forward-compatible fields are never replaced as a whole module. A configured
+profile uses
 `<base>/.ekko/skills/<profile>` for its skills and
 `<base>/.ekko/logs/<profile>` for its log. Its default per-session workspace is
 `<base>/.ekko/workspace/<profile>/<session-id>`; an explicitly supplied
@@ -172,19 +174,22 @@ the default profile from `<hermes>/skills` and every named profile from
 skills.
 
 ```ts
-import { AgentRuntime, setupEkkoAgent } from './src/index'
+import { setupEkkoAgent } from 'ekko-agent'
 
 const setup = setupEkkoAgent({
   baseDirectory: '/path/to/base',
   profiles: ['default'],
 })
-const profile = setup.profile('default')
-const runtime = new AgentRuntime({
-  modelClient: client,
-  memory: setup.memory,
-  skillDirectory: profile.skillDirectory,
-  toolAuthorizer: setup.toolApprovals.authorize,
+setup.config.setModelProvider('deepseek', {
+  type: 'openai-compatible',
+  requestStyle: 'openai-chat',
+  baseUrl: 'https://api.deepseek.com/v1',
+  defaultModel: 'deepseek-chat',
+  apiKey: 'sk-...',
 })
+setup.config.setDefaultModel('deepseek')
+
+const runtime = setup.createRuntime({ profile: 'default' })
 
 try {
   const result = await runtime.run({
@@ -204,6 +209,99 @@ try {
 Set `toolsEnabled: false` to omit all tool sources (built-ins, MCP, memory,
 and skill tools). Set `skillsEnabled: false` to omit constructor and per-run
 skills. The switches are independent and default to `true`.
+
+## Configuration and Models
+
+`setup.config` is an `EkkoConfigStore`. It exposes `read`, `update`, `replace`,
+`reset`, `listModelProviders`, `getModelProvider`, `setModelProvider`,
+`updateModelProvider`, `deleteModelProvider`, and `setDefaultModel`. Nested
+`update` patches merge at field level, so changing `runtime.maxSteps` does not
+replace other runtime settings. `setup.modelProviderConfig()` resolves the
+active provider, and `setup.createModelClient()` creates a client without
+starting a runtime.
+
+Provider credentials live in the same provider object under `apiKey`. The
+`.ekko/config/config.json` file is created with user-only `0600` permissions.
+A caller can still pass `apiKey` to `setup.createModelClient()` or
+`setup.createRuntime()` to override the persisted value for one process.
+
+```ts
+setup.config.update({
+  runtime: { maxSteps: 60 },
+  model: { reasoningEffort: 'high', maxTokens: 8_192 },
+  tools: { codeExec: { enabled: false } },
+})
+
+const providers = setup.config.listModelProviders()
+const client = setup.createModelClient({ provider: providers[0].id })
+```
+
+## Sessions and Messages
+
+The standalone database owns Studio-compatible `sessions` and `messages`
+tables. `setup.conversations` exposes Session operations `createSession`,
+`getSession`, `listSessions`, `updateSession`, `renameSession`,
+`setSessionArchived`, `endSession`, `reopenSession`, `deleteSession`, and
+`getSessionDetail`. Message operations are `addMessage`, `addMessages`,
+`getMessage`, `listMessages`, `updateMessage`, `deleteMessage`, and
+`clearMessages`. `recordSessionUsage` accumulates model usage independently of
+message edits.
+
+```ts
+const session = setup.conversations.createSession({
+  profile: 'default',
+  provider: 'deepseek',
+  model: 'deepseek-chat',
+  title: 'Repository review',
+})
+
+setup.conversations.addMessage({
+  sessionId: session.id,
+  role: 'user',
+  content: 'Review this repository.',
+})
+
+setup.conversations.renameSession(session.id, 'Ekko repository review')
+const history = setup.conversations.listMessages(session.id)
+```
+
+## Memory
+
+`setup.memory` exposes the standalone memory API. Memory-node operations are
+`list`, `get`, `search`, `create`, `update`, `expire`, `delete`, and `forget`.
+Conversation-derived memory data can be read with `listMessages`,
+`getLatestSummary`, `getSessionState`, and `listAuditEvents`. The lower-level
+SQLite implementation remains available as `setup.memoryStore`.
+
+```ts
+const created = await setup.memory.create({
+  kind: 'general_preference',
+  itemKey: 'interface_theme',
+  reason: 'User selected a persistent preference.',
+  explicitUserIntent: true,
+  identity: { sessionId: session.id, profileId: 'default' },
+  node: {
+    valueJson: 'dark',
+    title: 'Interface theme',
+    content: 'The user prefers a dark interface.',
+  },
+})
+
+const memories = await setup.memory.list({ profileId: 'default', limit: 20 })
+const updated = await setup.memory.update(created.nodeId!, {
+  reason: 'User changed the preference.',
+  expectedRevision: created.node!.revision,
+  identity: { sessionId: session.id, profileId: 'default' },
+  node: { valueJson: 'light' },
+})
+
+// Soft delete is the default. Hard delete additionally requires confirmed: true.
+await setup.memory.delete(updated.nodeId!, {
+  reason: 'User asked Ekko to forget it.',
+  expectedRevision: updated.node!.revision,
+  identity: { sessionId: session.id, profileId: 'default' },
+})
+```
 
 ## Skill Evolution
 
@@ -249,12 +347,13 @@ same file as the `ekko-agent` source for the selected profile.
 npm install
 npm run check
 npm test
+npm run build
 ```
 
 ## Example
 
 ```ts
-import { createModelClient } from './src/index'
+import { createModelClient } from 'ekko-agent'
 
 const client = createModelClient({
   id: 'deepseek',
