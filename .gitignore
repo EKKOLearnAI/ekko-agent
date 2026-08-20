@@ -1,6 +1,10 @@
 node_modules/
 dist/
-.ekko-agent/
+coverage/
+*.tsbuildinfo
+.DS_Store
 .env
 .env.local
-package-lock.json
+
+sql-data/*
+!sql-data/.gitkeep
