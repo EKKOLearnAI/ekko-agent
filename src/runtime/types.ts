@@ -22,6 +22,8 @@ export interface AgentRuntimeContextEstimate {
 }
 
 export interface AgentRuntimeOptions {
+  /** Fixed profile identity for tool and memory operations. Per-run input cannot override it. */
+  profileId?: string
   modelClient?: ModelClient
   /** Disable every tool source, including built-ins, MCP, memory, and skill tools. */
   toolsEnabled?: boolean

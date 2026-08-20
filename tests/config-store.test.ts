@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_EKKO_CONFIG,
+  EkkoAgent,
   EkkoConfigError,
   EkkoConfigStore,
   resolveConfiguredModelProvider,
@@ -21,6 +22,33 @@ afterEach(async () => {
 })
 
 describe('EkkoConfigStore', () => {
+  it('collects model and authorization management on new EkkoAgent()', () => {
+    const agent = new EkkoAgent({ baseDirectory, env: { NODE_ENV: 'test' } })
+    try {
+      agent.installModelProviderPreset('qwen-oauth')
+      agent.setModelAuthorization('qwen-oauth', {
+        type: 'oauth',
+        accessToken: 'qwen-token',
+      })
+
+      expect(agent.listModelProviders()).toEqual([
+        expect.objectContaining({ id: 'qwen-oauth' }),
+      ])
+      expect(agent.getModelProvider('qwen-oauth')).toMatchObject({
+        apiMode: 'chat_completions',
+      })
+      expect(agent.listModelAuthorizations()).toEqual([
+        expect.objectContaining({ provider: 'qwen-oauth' }),
+      ])
+      agent.updateModelProvider('qwen-oauth', { defaultModel: 'qwen3-coder-plus' })
+      agent.updateModelAuthorization('qwen-oauth', { accessToken: 'updated-qwen-token' })
+      expect(agent.deleteModelAuthorization('qwen-oauth')).toBe(true)
+      expect(agent.deleteModelProvider('qwen-oauth')).toBe(true)
+    } finally {
+      agent.close()
+    }
+  })
+
   it('fills newly added leaves without replacing user values or unknown fields', async () => {
     const setup = setupEkkoAgent({ baseDirectory, env: { NODE_ENV: 'test' } })
     const configPath = setup.layout.configPath
@@ -110,6 +138,95 @@ describe('EkkoConfigStore', () => {
       expect(setup.config.deleteModelProvider('acme')).toBe(false)
     } finally {
       setup.close()
+    }
+  })
+
+  it('stores API-mode-aware built-in presets and exposes preset CRUD and installation', () => {
+    const setup = setupEkkoAgent({ baseDirectory, env: { NODE_ENV: 'test' } })
+    try {
+      expect(setup.config.getModelProviderPreset('openai-codex')).toMatchObject({
+        label: 'OpenAI Codex',
+        apiMode: 'codex_responses',
+        requestStyle: 'openai-responses',
+        authType: 'oauth',
+      })
+      expect(setup.config.getModelProviderPreset('qwen-oauth')).toMatchObject({
+        apiMode: 'chat_completions',
+        requestStyle: 'openai-chat',
+      })
+      expect(setup.config.getModelProviderPreset('minimax-oauth')).toMatchObject({
+        apiMode: 'anthropic_messages',
+        requestStyle: 'anthropic-messages',
+      })
+
+      setup.config.installModelProviderPreset('openai-codex', {
+        defaultModel: 'gpt-5.6-terra',
+      })
+      expect(setup.config.getModelProvider('openai-codex')).toMatchObject({
+        source: 'builtin',
+        apiMode: 'codex_responses',
+        requestStyle: 'openai-responses',
+        defaultModel: 'gpt-5.6-terra',
+      })
+      expect(setup.modelProviderConfig({ provider: 'openai-codex' })).toMatchObject({
+        apiMode: 'codex_responses',
+        requestStyle: 'openai-responses',
+      })
+
+      const deepseek = setup.config.getModelProviderPreset('deepseek')!
+      setup.config.setModelProviderPreset('internal-deepseek', {
+        ...deepseek,
+        id: 'internal-deepseek',
+        label: 'Internal DeepSeek',
+        builtin: false,
+      })
+      setup.config.updateModelProviderPreset('internal-deepseek', { defaultModel: 'deepseek-chat' })
+      expect(setup.config.getModelProviderPreset('internal-deepseek')).toMatchObject({
+        defaultModel: 'deepseek-chat',
+        builtin: false,
+      })
+      setup.config.installModelProviderPreset('internal-deepseek')
+      expect(setup.config.getModelProvider('internal-deepseek')).toMatchObject({ source: 'custom' })
+      expect(setup.config.deleteModelProviderPreset('internal-deepseek')).toBe(true)
+      expect(setup.config.deleteModelProviderPreset('internal-deepseek')).toBe(false)
+    } finally {
+      setup.close()
+    }
+  })
+
+  it('exposes authorization add update list and delete operations', () => {
+    const setup = setupEkkoAgent({ baseDirectory, env: { NODE_ENV: 'test' } })
+    try {
+      setup.config.installModelProviderPreset('xai-oauth')
+      setup.config.setModelAuthorization('xai-oauth', {
+        type: 'oauth',
+        accessToken: 'initial-token',
+        refreshToken: 'refresh-token',
+        expiresAt: '2026-08-20T08:00:00Z',
+      })
+      expect(setup.config.listModelAuthorizations()).toEqual([
+        expect.objectContaining({ provider: 'xai-oauth' }),
+      ])
+      setup.config.updateModelAuthorization('xai-oauth', { accessToken: 'updated-token' })
+      expect(setup.config.getModelAuthorization('xai-oauth')?.accessToken).toBe('updated-token')
+      expect(setup.config.deleteModelAuthorization('xai-oauth')).toBe(true)
+      expect(setup.config.deleteModelAuthorization('xai-oauth')).toBe(false)
+    } finally {
+      setup.close()
+    }
+  })
+
+  it('keeps explicitly deleted built-in presets deleted across setup', () => {
+    const first = setupEkkoAgent({ baseDirectory, env: { NODE_ENV: 'test' } })
+    expect(first.config.deleteModelProviderPreset('deepseek')).toBe(true)
+    first.close()
+
+    const second = setupEkkoAgent({ baseDirectory, env: { NODE_ENV: 'test' } })
+    try {
+      expect(second.config.getModelProviderPreset('deepseek')).toBeUndefined()
+      expect(second.config.read().model.disabledProviderPresets).toContain('deepseek')
+    } finally {
+      second.close()
     }
   })
 

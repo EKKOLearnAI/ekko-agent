@@ -14,8 +14,15 @@ import {
   EKKO_CONFIG_SCHEMA_VERSION,
   type EkkoConfig,
   type EkkoConfigPatch,
+  type EkkoModelAuthorizationSettings,
   type EkkoModelProviderSettings,
 } from './config'
+import {
+  modelApiModeToRequestStyle,
+  type EkkoModelApiMode,
+  type EkkoModelProviderAuthType,
+  type EkkoModelProviderPreset,
+} from './model/provider-presets'
 import type {
   ModelCapabilities,
   ModelProviderType,
@@ -41,6 +48,15 @@ const MODEL_REQUEST_STYLES: ModelRequestStyle[] = [
   'prompt-completion',
   'custom-runtime',
 ]
+const MODEL_API_MODES: EkkoModelApiMode[] = [
+  'chat_completions',
+  'codex_responses',
+  'anthropic_messages',
+  'gemini_contents',
+  'prompt_completion',
+  'custom_runtime',
+]
+const MODEL_PROVIDER_AUTH_TYPES: EkkoModelProviderAuthType[] = ['none', 'api-key', 'oauth']
 const REASONING_EFFORTS: ModelReasoningEffort[] = [
   'none',
   'minimal',
@@ -78,6 +94,15 @@ export interface ConfiguredModelProviderEntry {
   id: string
   settings: EkkoModelProviderSettings
   isDefault: boolean
+}
+
+export interface ConfiguredModelAuthorizationEntry {
+  provider: string
+  settings: EkkoModelAuthorizationSettings
+}
+
+export interface InstallModelProviderPresetOptions extends Partial<EkkoModelProviderSettings> {
+  apiKey?: string
 }
 
 export class EkkoConfigError extends Error {
@@ -133,6 +158,81 @@ export class EkkoConfigStore {
     return this.replace(cloneDefaultConfig())
   }
 
+  listModelProviderPresets(): EkkoModelProviderPreset[] {
+    return Object.values(this.read().model.providerCatalog)
+      .sort((left, right) => left.label.localeCompare(right.label))
+      .map(preset => structuredClone(preset))
+  }
+
+  getModelProviderPreset(id: string): EkkoModelProviderPreset | undefined {
+    const providerId = normalizeProviderId(id)
+    const preset = this.read().model.providerCatalog[providerId]
+    return preset ? structuredClone(preset) : undefined
+  }
+
+  setModelProviderPreset(id: string, preset: Omit<EkkoModelProviderPreset, 'id'> & { id?: string }): EkkoConfig {
+    const providerId = normalizeProviderId(id)
+    const current = this.read()
+    const disabledProviderPresets = current.model.disabledProviderPresets
+      .filter(disabledId => disabledId !== providerId)
+    return this.replace(normalizeEkkoConfig({
+      ...current,
+      model: {
+        ...current.model,
+        providerCatalog: {
+          ...current.model.providerCatalog,
+          [providerId]: { ...preset, id: providerId },
+        },
+        disabledProviderPresets,
+      },
+    }))
+  }
+
+  updateModelProviderPreset(id: string, patch: Partial<EkkoModelProviderPreset>): EkkoConfig {
+    const providerId = normalizeProviderId(id)
+    const existing = this.read().model.providerCatalog[providerId]
+    if (!existing) throw new EkkoConfigError('model provider preset does not exist', `model.providerCatalog.${providerId}`)
+    return this.setModelProviderPreset(providerId, { ...existing, ...patch, id: providerId })
+  }
+
+  deleteModelProviderPreset(id: string): boolean {
+    const providerId = normalizeProviderId(id)
+    const current = this.read()
+    if (!current.model.providerCatalog[providerId]) return false
+    const providerCatalog = { ...current.model.providerCatalog }
+    delete providerCatalog[providerId]
+    const disabledProviderPresets = [...new Set([
+      ...current.model.disabledProviderPresets,
+      providerId,
+    ])]
+    this.replace(normalizeEkkoConfig({
+      ...current,
+      model: { ...current.model, providerCatalog, disabledProviderPresets },
+    }))
+    return true
+  }
+
+  installModelProviderPreset(
+    id: string,
+    options: InstallModelProviderPresetOptions = {},
+  ): EkkoConfig {
+    const providerId = normalizeProviderId(id)
+    const preset = this.read().model.providerCatalog[providerId]
+    if (!preset) throw new EkkoConfigError('model provider preset does not exist', `model.providerCatalog.${providerId}`)
+    return this.setModelProvider(providerId, {
+      label: preset.label,
+      type: preset.type,
+      apiMode: preset.apiMode,
+      requestStyle: preset.requestStyle,
+      baseUrl: preset.baseUrl,
+      defaultModel: preset.defaultModel,
+      models: [...preset.models],
+      authType: preset.authType,
+      source: preset.builtin ? 'builtin' : 'custom',
+      ...options,
+    })
+  }
+
   listModelProviders(): ConfiguredModelProviderEntry[] {
     const config = this.read()
     return Object.entries(config.model.providers)
@@ -176,13 +276,16 @@ export class EkkoConfigStore {
     const current = this.read()
     if (!current.model.providers[providerId]) return false
     const providers = { ...current.model.providers }
+    const authorizations = { ...current.model.authorizations }
     delete providers[providerId]
+    delete authorizations[providerId]
     const removingDefault = current.model.defaultProvider === providerId
     this.replace(normalizeEkkoConfig({
       ...current,
       model: {
         ...current.model,
         providers,
+        authorizations,
         ...(removingDefault ? { defaultProvider: '', defaultModel: '' } : {}),
       },
     }))
@@ -202,6 +305,64 @@ export class EkkoConfigStore {
         defaultModel,
       },
     })
+  }
+
+  listModelAuthorizations(): ConfiguredModelAuthorizationEntry[] {
+    return Object.entries(this.read().model.authorizations)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([provider, settings]) => ({
+        provider,
+        settings: structuredClone(settings),
+      }))
+  }
+
+  getModelAuthorization(provider: string): EkkoModelAuthorizationSettings | undefined {
+    const providerId = normalizeProviderId(provider)
+    const settings = this.read().model.authorizations[providerId]
+    return settings ? structuredClone(settings) : undefined
+  }
+
+  setModelAuthorization(provider: string, settings: EkkoModelAuthorizationSettings): EkkoConfig {
+    const providerId = normalizeProviderId(provider)
+    const current = this.read()
+    if (!current.model.providers[providerId]) {
+      throw new EkkoConfigError('model provider does not exist', `model.providers.${providerId}`)
+    }
+    return this.replace(normalizeEkkoConfig({
+      ...current,
+      model: {
+        ...current.model,
+        authorizations: {
+          ...current.model.authorizations,
+          [providerId]: settings,
+        },
+      },
+    }))
+  }
+
+  updateModelAuthorization(
+    provider: string,
+    patch: Partial<EkkoModelAuthorizationSettings>,
+  ): EkkoConfig {
+    const providerId = normalizeProviderId(provider)
+    const existing = this.read().model.authorizations[providerId]
+    if (!existing) {
+      throw new EkkoConfigError('model authorization does not exist', `model.authorizations.${providerId}`)
+    }
+    return this.setModelAuthorization(providerId, { ...existing, ...patch })
+  }
+
+  deleteModelAuthorization(provider: string): boolean {
+    const providerId = normalizeProviderId(provider)
+    const current = this.read()
+    if (!current.model.authorizations[providerId]) return false
+    const authorizations = { ...current.model.authorizations }
+    delete authorizations[providerId]
+    this.replace(normalizeEkkoConfig({
+      ...current,
+      model: { ...current.model, authorizations },
+    }))
+    return true
   }
 }
 
@@ -271,7 +432,15 @@ export function normalizeEkkoConfig(value: unknown): EkkoConfig {
   const skills = record(source.skills, 'skills', true)
   const logging = record(source.logging, 'logging', true)
   const prompt = record(source.prompt, 'prompt', true)
+  const disabledProviderPresets = stringArray(
+    model.disabledProviderPresets,
+    DEFAULT_EKKO_CONFIG.model.disabledProviderPresets,
+    'model.disabledProviderPresets',
+  ).map(normalizeProviderId)
+  const providerCatalog = normalizeProviderCatalog(model.providerCatalog)
+  for (const provider of disabledProviderPresets) delete providerCatalog[provider]
   const providers = normalizeProviders(model.providers)
+  const authorizations = normalizeAuthorizations(model.authorizations)
 
   const normalized: EkkoConfig = {
     ...source,
@@ -315,7 +484,16 @@ export function normalizeEkkoConfig(value: unknown): EkkoConfig {
         DEFAULT_EKKO_CONFIG.model.reasoningSummary,
         'model.reasoningSummary',
       ),
+      authorizationRefreshLeewayMs: integer(
+        model.authorizationRefreshLeewayMs,
+        DEFAULT_EKKO_CONFIG.model.authorizationRefreshLeewayMs,
+        'model.authorizationRefreshLeewayMs',
+        0,
+      ),
+      providerCatalog,
+      disabledProviderPresets,
       providers,
+      authorizations,
     },
     tools: {
       ...tools,
@@ -405,6 +583,11 @@ export function normalizeEkkoConfig(value: unknown): EkkoConfig {
   if (normalized.model.defaultProvider && !normalized.model.defaultModel) {
     normalized.model.defaultModel = normalized.model.providers[normalized.model.defaultProvider].defaultModel
   }
+  for (const provider of Object.keys(normalized.model.authorizations)) {
+    if (!normalized.model.providers[provider]) {
+      throw new EkkoConfigError('must reference a configured provider', `model.authorizations.${provider}`)
+    }
+  }
   if (normalized.tools.codeExec.enabled && normalized.tools.codeExec.languages.length === 0) {
     throw new EkkoConfigError('must contain at least one language when code_exec is enabled', 'tools.codeExec.languages')
   }
@@ -419,9 +602,19 @@ function mergeConfigPatch(current: EkkoConfig, patch: EkkoConfigPatch): JsonReco
     model: {
       ...current.model,
       ...patch.model,
+      providerCatalog: {
+        ...current.model.providerCatalog,
+        ...patch.model?.providerCatalog,
+      },
+      disabledProviderPresets: patch.model?.disabledProviderPresets
+        ?? current.model.disabledProviderPresets,
       providers: {
         ...current.model.providers,
         ...patch.model?.providers,
+      },
+      authorizations: {
+        ...current.model.authorizations,
+        ...patch.model?.authorizations,
       },
     },
     tools: {
@@ -463,6 +656,41 @@ function mergeMissingDefaults(defaults: unknown, current: unknown): unknown {
   return merged
 }
 
+function normalizeProviderCatalog(value: unknown): Record<string, EkkoModelProviderPreset> {
+  const source = record(value, 'model.providerCatalog', true)
+  const catalog: Record<string, EkkoModelProviderPreset> = {}
+  for (const [rawId, rawPreset] of Object.entries(source)) {
+    const id = normalizeProviderId(rawId)
+    const path = `model.providerCatalog.${id}`
+    const preset = record(rawPreset, path)
+    const configuredId = normalizeProviderId(requiredString(preset.id, `${path}.id`))
+    if (configuredId !== id) throw new EkkoConfigError('must match its catalog key', `${path}.id`)
+    const apiMode = enumValue(preset.apiMode, MODEL_API_MODES, undefined, `${path}.apiMode`)
+    const requestStyle = enumValue(
+      preset.requestStyle,
+      MODEL_REQUEST_STYLES,
+      modelApiModeToRequestStyle(apiMode),
+      `${path}.requestStyle`,
+    )
+    if (requestStyle !== modelApiModeToRequestStyle(apiMode)) {
+      throw new EkkoConfigError('does not match apiMode', `${path}.requestStyle`)
+    }
+    catalog[id] = {
+      id,
+      label: requiredString(preset.label, `${path}.label`),
+      type: enumValue(preset.type, MODEL_PROVIDER_TYPES, undefined, `${path}.type`),
+      apiMode,
+      requestStyle,
+      baseUrl: requiredString(preset.baseUrl, `${path}.baseUrl`),
+      defaultModel: requiredString(preset.defaultModel, `${path}.defaultModel`),
+      models: stringArray(preset.models, [], `${path}.models`),
+      authType: enumValue(preset.authType, MODEL_PROVIDER_AUTH_TYPES, undefined, `${path}.authType`),
+      builtin: booleanValue(preset.builtin, true, `${path}.builtin`),
+    }
+  }
+  return catalog
+}
+
 function normalizeProviders(value: unknown): Record<string, EkkoModelProviderSettings> {
   const source = record(value, 'model.providers', true)
   const providers: Record<string, EkkoModelProviderSettings> = {}
@@ -480,8 +708,19 @@ function normalizeProviderSettings(value: unknown, path: string): EkkoModelProvi
     type: enumValue(source.type, MODEL_PROVIDER_TYPES, undefined, `${path}.type`),
     defaultModel: requiredString(source.defaultModel, `${path}.defaultModel`),
   }
+  if (source.label !== undefined) settings.label = requiredString(source.label, `${path}.label`)
+  if (source.apiMode !== undefined) {
+    settings.apiMode = enumValue(source.apiMode, MODEL_API_MODES, undefined, `${path}.apiMode`)
+  }
   if (source.requestStyle !== undefined) {
     settings.requestStyle = enumValue(source.requestStyle, MODEL_REQUEST_STYLES, undefined, `${path}.requestStyle`)
+  }
+  if (
+    settings.apiMode &&
+    settings.requestStyle &&
+    settings.requestStyle !== modelApiModeToRequestStyle(settings.apiMode)
+  ) {
+    throw new EkkoConfigError('does not match apiMode', `${path}.requestStyle`)
   }
   if (source.openAIChatReasoningReplayFormat !== undefined) {
     settings.openAIChatReasoningReplayFormat = enumValue(
@@ -495,12 +734,55 @@ function normalizeProviderSettings(value: unknown, path: string): EkkoModelProvi
     if (source[key] !== undefined) settings[key] = requiredString(source[key], `${path}.${key}`)
   }
   if (source.apiKey !== undefined) settings.apiKey = stringValue(source.apiKey, '', `${path}.apiKey`)
+  if (source.models !== undefined) settings.models = stringArray(source.models, [], `${path}.models`)
+  if (source.authType !== undefined) {
+    settings.authType = enumValue(source.authType, MODEL_PROVIDER_AUTH_TYPES, undefined, `${path}.authType`)
+  }
+  if (source.source !== undefined) {
+    settings.source = enumValue(source.source, ['builtin', 'custom'] as const, undefined, `${path}.source`)
+  }
   if (source.headers !== undefined) settings.headers = providerHeaders(source.headers, `${path}.headers`)
   if (source.timeoutMs !== undefined) settings.timeoutMs = integer(source.timeoutMs, 0, `${path}.timeoutMs`, 1)
   if (source.capabilities !== undefined) {
     settings.capabilities = normalizeCapabilities(source.capabilities, `${path}.capabilities`)
   }
   return settings
+}
+
+function normalizeAuthorizations(value: unknown): Record<string, EkkoModelAuthorizationSettings> {
+  const source = record(value, 'model.authorizations', true)
+  const authorizations: Record<string, EkkoModelAuthorizationSettings> = {}
+  for (const [rawProvider, rawSettings] of Object.entries(source)) {
+    const provider = normalizeProviderId(rawProvider)
+    const path = `model.authorizations.${provider}`
+    const input = record(rawSettings, path)
+    const settings: EkkoModelAuthorizationSettings = {
+      ...input,
+      type: enumValue(input.type, ['oauth'], undefined, `${path}.type`),
+    }
+    for (const key of [
+      'accessToken',
+      'refreshToken',
+      'tokenUrl',
+      'clientId',
+      'clientSecret',
+      'scope',
+      'baseUrl',
+    ] as const) {
+      if (input[key] !== undefined) settings[key] = stringValue(input[key], '', `${path}.${key}`)
+    }
+    for (const key of ['expiresAt', 'obtainedAt'] as const) {
+      if (input[key] !== undefined) settings[key] = isoDateString(input[key], `${path}.${key}`)
+    }
+    if (input.tokenParams !== undefined) {
+      settings.tokenParams = stringRecord(input.tokenParams, `${path}.tokenParams`)
+    }
+    if (input.apiMode !== undefined) {
+      settings.apiMode = enumValue(input.apiMode, MODEL_API_MODES, undefined, `${path}.apiMode`)
+    }
+    authorizations[provider] = settings
+  }
+  return authorizations
 }
 
 function normalizeCapabilities(value: unknown, path: string): Partial<ModelCapabilities> {
@@ -568,6 +850,13 @@ function requiredString(value: unknown, path: string): string {
   const normalized = stringValue(value, '', path)
   if (!normalized) throw new EkkoConfigError('must not be empty', path)
   return normalized
+}
+
+function isoDateString(value: unknown, path: string): string {
+  const normalized = requiredString(value, path)
+  const timestamp = Date.parse(normalized)
+  if (!Number.isFinite(timestamp)) throw new EkkoConfigError('must be an ISO date string', path)
+  return new Date(timestamp).toISOString()
 }
 
 function stringArray(value: unknown, fallback: readonly string[], path: string): string[] {

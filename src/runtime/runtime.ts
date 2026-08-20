@@ -97,6 +97,7 @@ function foregroundOnlyDelegateTaskDefinition(definition: AgentToolDefinition): 
 
 export class AgentRuntime {
   private readonly modelClient?: AgentRuntimeOptions['modelClient']
+  private readonly profileId?: string
   private readonly toolsEnabled: boolean
   private readonly tools: AgentToolRegistry
   private readonly skillsEnabled: boolean
@@ -121,6 +122,7 @@ export class AgentRuntime {
   private readonly runtimeLogger?: EkkoRuntimeLogger
 
   constructor(options: AgentRuntimeOptions) {
+    this.profileId = String(options.profileId || '').trim() || undefined
     this.modelClient = options.modelClient
     this.toolsEnabled = options.toolsEnabled !== false
     this.tools = this.toolsEnabled
@@ -591,7 +593,7 @@ export class AgentRuntime {
     const userSystemMessages = normalized.filter(message => message.role === 'system').map(message => message.content)
     const nonSystemMessages = normalized.filter(message => message.role !== 'system')
     const modelClient = this.modelClientFor(input)
-    const toolContext = input.toolContext ?? this.toolContext
+    const toolContext = this.mergedToolContext(input)
     const systemPrompt = buildSystemPrompt({
       basePrompt: input.systemPrompt ?? this.systemPrompt,
       runtimeInstructions: this.runtimeInstructions,
@@ -620,10 +622,10 @@ export class AgentRuntime {
     if (!this.memory || input.memoryEnabled === false) return undefined
     const sessionId = this.contextKeyFor(input)
     if (!sessionId) return undefined
-    const context = input.toolContext ?? this.toolContext
+    const context = this.mergedToolContext(input)
     return {
       sessionId,
-      profileId: stringMetadata(input.metadata?.profile) || context?.profileId || 'default',
+      profileId: this.profileId || stringMetadata(input.metadata?.profile) || context?.profileId || 'default',
     }
   }
 
@@ -798,13 +800,21 @@ export class AgentRuntime {
   }
 
   private runToolContext(input: AgentRuntimeRunInput, sourceMessageIds?: string[]): AgentToolContext | undefined {
-    const context = input.toolContext ?? this.toolContext
+    const context = this.mergedToolContext(input)
     if (!input.signal && !sourceMessageIds?.length) return context
     return {
       ...context,
       ...(sourceMessageIds?.length ? { sourceMessageIds } : {}),
       signal: input.signal,
     }
+  }
+
+  private mergedToolContext(input: AgentRuntimeRunInput): AgentToolContext | undefined {
+    const context = this.toolContext || input.toolContext
+      ? { ...this.toolContext, ...input.toolContext }
+      : undefined
+    if (!this.profileId) return context
+    return { ...context, profileId: this.profileId }
   }
 
   private async executeTool(

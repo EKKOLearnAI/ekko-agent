@@ -8,6 +8,11 @@ import type {
   ModelRequestStyle,
 } from './types'
 import { authorizedModelProviderPreset } from './authorized-providers'
+import {
+  modelApiModeToRequestStyle,
+  requestStyleToModelApiMode,
+  type EkkoModelApiMode,
+} from './provider-presets'
 import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '../config'
 import { createModelClient } from './registry'
 
@@ -32,6 +37,8 @@ export interface ResolveConfiguredModelProviderInput {
   provider?: string
   model?: string
   apiKey?: string
+  baseUrl?: string
+  apiMode?: EkkoModelApiMode
 }
 
 export interface CreateConfiguredModelClientInput extends ResolveConfiguredModelProviderInput {
@@ -43,6 +50,9 @@ export function requestStyleFromApiMode(apiMode?: string): ModelRequestStyle | u
   if (normalized === 'chat_completions') return 'openai-chat'
   if (normalized === 'codex_responses') return 'openai-responses'
   if (normalized === 'anthropic_messages') return 'anthropic-messages'
+  if (normalized === 'gemini_contents') return 'gemini-contents'
+  if (normalized === 'prompt_completion') return 'prompt-completion'
+  if (normalized === 'custom_runtime') return 'custom-runtime'
   return undefined
 }
 
@@ -82,6 +92,7 @@ export function createProviderConfig(input: {
   return {
     id: authorizedPreset?.id || input.provider || 'openai',
     type: providerTypeForStyle(input.provider, input.requestStyle),
+    apiMode: authorizedPreset?.apiMode || requestStyleToModelApiMode(input.requestStyle),
     requestStyle: input.requestStyle,
     baseUrl: input.baseUrl || authorizedPreset?.baseUrl,
     apiKey: input.apiKey || undefined,
@@ -134,8 +145,11 @@ export function resolveConfiguredModelProvider(
   const settings = input.config.model.providers[provider]
   if (!settings) throw new Error(`Configured model provider not found: ${provider}`)
 
-  const apiKey = input.apiKey ?? settings.apiKey
+  const authorization = input.config.model.authorizations[provider]
+  const apiKey = input.apiKey ?? authorization?.accessToken ?? settings.apiKey
   const preset = authorizedModelProviderPreset(provider, apiKey)
+  const configuredApiMode = input.apiMode || authorization?.apiMode || settings.apiMode
+  const apiModeStyle = configuredApiMode ? modelApiModeToRequestStyle(configuredApiMode) : undefined
   const defaultModel = String(
     input.model ||
     (provider === input.config.model.defaultProvider ? input.config.model.defaultModel : '') ||
@@ -146,10 +160,13 @@ export function resolveConfiguredModelProvider(
   return {
     id: preset?.id || provider,
     type: settings.type,
-    requestStyle: settings.requestStyle || preset?.requestStyle || requestStyleForConfig(provider, settings.baseUrl),
+    apiMode: configuredApiMode
+      ? configuredApiMode
+      : requestStyleToModelApiMode(settings.requestStyle || preset?.requestStyle || requestStyleForConfig(provider, settings.baseUrl)),
+    requestStyle: apiModeStyle || settings.requestStyle || preset?.requestStyle || requestStyleForConfig(provider, settings.baseUrl),
     openAIChatReasoningReplayFormat: settings.openAIChatReasoningReplayFormat,
     apiKey,
-    baseUrl: settings.baseUrl || preset?.baseUrl,
+    baseUrl: input.baseUrl || authorization?.baseUrl || settings.baseUrl || preset?.baseUrl,
     endpointPath: settings.endpointPath,
     defaultModel,
     headers: {

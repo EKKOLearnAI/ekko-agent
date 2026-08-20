@@ -6,8 +6,14 @@ import type {
   ModelRequestStyle,
   OpenAIChatReasoningReplayFormat,
 } from './model/types'
+import {
+  BUILTIN_MODEL_PROVIDER_PRESETS,
+  type EkkoModelApiMode,
+  type EkkoModelProviderAuthType,
+  type EkkoModelProviderPreset,
+} from './model/provider-presets'
 
-export const EKKO_CONFIG_SCHEMA_VERSION = 2
+export const EKKO_CONFIG_SCHEMA_VERSION = 3
 export const EKKO_CONFIG_DIRECTORY_NAME = 'config'
 export const EKKO_CONFIG_FILE_NAME = 'config.json'
 
@@ -16,6 +22,7 @@ export const DEFAULT_AGENT_MODEL_MAX_RETRIES = 3
 export const DEFAULT_AGENT_MAX_CONSECUTIVE_TOOL_FAILURES = 6
 export const DEFAULT_AGENT_SUBTASK_MAX_STEPS = 30
 export const DEFAULT_MODEL_REQUEST_TIMEOUT_MS = 5 * 60 * 1_000
+export const DEFAULT_MODEL_AUTHORIZATION_REFRESH_LEEWAY_MS = 5 * 60 * 1_000
 export const DEFAULT_TOOL_EXECUTION_TIMEOUT_MS = 120_000
 export const DEFAULT_TOOL_APPROVAL_TIMEOUT_MS = 5 * 60 * 1_000
 export const DEFAULT_CLARIFICATION_TIMEOUT_MS = 5 * 60 * 1_000
@@ -41,16 +48,37 @@ export interface EkkoRuntimeConfig {
  * Persisted provider settings owned by the user's `.ekko` directory.
  */
 export interface EkkoModelProviderSettings {
+  label?: string
   type: ModelProviderType
+  apiMode?: EkkoModelApiMode
   requestStyle?: ModelRequestStyle
   openAIChatReasoningReplayFormat?: OpenAIChatReasoningReplayFormat
   baseUrl?: string
   endpointPath?: string
   defaultModel: string
+  models?: string[]
+  authType?: EkkoModelProviderAuthType
+  source?: 'builtin' | 'custom'
   apiKey?: string
   headers?: Record<string, string>
   timeoutMs?: number
   capabilities?: Partial<ModelCapabilities>
+}
+
+/** OAuth state owned by Ekko and persisted in the user-only config file. */
+export interface EkkoModelAuthorizationSettings {
+  type: 'oauth'
+  accessToken?: string
+  refreshToken?: string
+  expiresAt?: string
+  obtainedAt?: string
+  tokenUrl?: string
+  clientId?: string
+  clientSecret?: string
+  scope?: string
+  tokenParams?: Record<string, string>
+  baseUrl?: string
+  apiMode?: EkkoModelApiMode
 }
 
 export interface EkkoModelConfig {
@@ -61,7 +89,11 @@ export interface EkkoModelConfig {
   maxTokens?: number
   reasoningEffort: ModelReasoningEffort
   reasoningSummary: ModelReasoningSummary
+  authorizationRefreshLeewayMs: number
+  providerCatalog: Record<string, EkkoModelProviderPreset>
+  disabledProviderPresets: string[]
   providers: Record<string, EkkoModelProviderSettings>
+  authorizations: Record<string, EkkoModelAuthorizationSettings>
 }
 
 export interface EkkoToolApprovalConfig {
@@ -128,8 +160,11 @@ export interface EkkoConfig {
 export type EkkoConfigPatch = {
   schemaVersion?: number
   runtime?: Partial<EkkoRuntimeConfig>
-  model?: Partial<Omit<EkkoModelConfig, 'providers'>> & {
+  model?: Partial<Omit<EkkoModelConfig, 'providerCatalog' | 'disabledProviderPresets' | 'providers' | 'authorizations'>> & {
+    providerCatalog?: Record<string, EkkoModelProviderPreset>
+    disabledProviderPresets?: string[]
     providers?: Record<string, EkkoModelProviderSettings>
+    authorizations?: Record<string, EkkoModelAuthorizationSettings>
   }
   tools?: Partial<Omit<EkkoToolsConfig, 'approvals' | 'codeExec'>> & {
     approvals?: Partial<EkkoToolApprovalConfig>
@@ -159,7 +194,11 @@ export const DEFAULT_EKKO_CONFIG: EkkoConfig = {
     requestTimeoutMs: DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
     reasoningEffort: 'medium',
     reasoningSummary: 'auto',
+    authorizationRefreshLeewayMs: DEFAULT_MODEL_AUTHORIZATION_REFRESH_LEEWAY_MS,
+    providerCatalog: structuredClone(BUILTIN_MODEL_PROVIDER_PRESETS),
+    disabledProviderPresets: [],
     providers: {},
+    authorizations: {},
   },
   tools: {
     enabled: true,
