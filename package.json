@@ -22,6 +22,7 @@
   },
   "files": [
     "dist",
+    "skills",
     "README.md",
     "docs/API.md"
   ],
@@ -32,12 +33,14 @@
     "api:docs:check": "node scripts/api-doc-harness.mjs",
     "api:docs:update": "node scripts/api-doc-harness.mjs --write",
     "harness:check": "npm run api:docs:check && npm run check && npm test",
+    "harness:memory": "vitest run tests/memory-service.test.ts tests/memory-quality-harness.test.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepare": "npm run build",
     "prepublishOnly": "npm run harness:check"
   },
   "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
     "agent-browser": "^0.26.0",
     "js-tiktoken": "^1.0.21"
   },

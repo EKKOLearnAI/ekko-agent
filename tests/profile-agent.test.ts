@@ -34,7 +34,7 @@ describe('profile agent facade', () => {
       expect(work.memory).not.toBe(personal.memory)
       expect(work.validation).toMatchObject({
         profile: 'work',
-        configSchemaVersion: 3,
+        configSchemaVersion: 6,
         directories: {
           skill: join(baseDirectory, '.ekko', 'skills', 'work'),
           log: join(baseDirectory, '.ekko', 'logs', 'work'),
@@ -103,6 +103,7 @@ describe('profile agent facade', () => {
       expect(requests[0].tools).toEqual(expect.arrayContaining([
         expect.objectContaining({ name: 'work_only' }),
       ]))
+      expect(requests[0].messages[0].content).toContain('profile: work')
       expect(runtimeToolProfiles).toContain('work')
 
       const session = work.conversation.createSession({ title: 'Work session' })
@@ -126,6 +127,34 @@ describe('profile agent facade', () => {
         expect.objectContaining({ profileId: 'work' }),
       ])
       expect(await ekko.default.memory.list()).toEqual([])
+    } finally {
+      ekko.close()
+    }
+  })
+
+  it('lets a host create a profile runtime before selecting a provider', async () => {
+    const ekko = new EkkoAgent({ baseDirectory, profiles: ['work'], env: { NODE_ENV: 'test' } })
+    const client: ModelClient = {
+      provider: 'host-owned',
+      requestStyle: 'custom-runtime',
+      capabilities: {
+        streaming: false,
+        tools: false,
+        vision: false,
+        jsonMode: false,
+        systemPrompt: true,
+      },
+      async create() {
+        return { content: 'host client' }
+      },
+      async *stream() {},
+    }
+
+    try {
+      const runtime = ekko.agent.get('work').runtime.create({ memory: false })
+      await expect(runtime.run({ messages: ['hello'], modelClient: client })).resolves.toMatchObject({
+        output: { content: 'host client' },
+      })
     } finally {
       ekko.close()
     }
