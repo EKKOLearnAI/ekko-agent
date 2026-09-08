@@ -1,6 +1,6 @@
 # Ekko Agent
 
-Ekko Agent is a standalone TypeScript agent runtime used by Hermes Studio. It
+Ekko Agent is a standalone TypeScript agent runtime used by Ekko Studio. It
 owns the model loop, provider adapters, tools, memory, skills, delegation,
 approvals, and structured request logging.
 
@@ -251,7 +251,7 @@ import. Each Profile receives `1password`, `apple-notes`, `apple-reminders`,
 `xlsx`. Startup
 installs missing built-ins and updates only
 an unchanged Ekko-installed copy. A user-edited or pre-existing same-name Skill
-is never overwritten. `image-gen` and `grok-image-to-video` use Hermes Studio's
+is never overwritten. `image-gen` and `grok-image-to-video` use Ekko Studio's
 local media endpoints and require a matching configured Studio Profile. The
 document Skills bundle their Python helpers, references, tests, and license
 notices; optional Python, LibreOffice, Poppler, OCR, and model dependencies are
